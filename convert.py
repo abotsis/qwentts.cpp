@@ -283,7 +283,6 @@ def convert_tokenizer_12hz(checkpoint_dir: Path, out_path: Path) -> int:
     writer.add_uint32("qwen3-tts-tokenizer.encoder.num_hidden_layers", enc["num_hidden_layers"])
     writer.add_float32("qwen3-tts-tokenizer.encoder.norm_eps", enc["norm_eps"])
     writer.add_float32("qwen3-tts-tokenizer.encoder.rope_theta", float(enc["rope_theta"]))
-    writer.add_uint32("qwen3-tts-tokenizer.encoder.sliding_window", enc["sliding_window"])
     writer.add_float32("qwen3-tts-tokenizer.encoder.layer_scale_initial_scale", enc["layer_scale_initial_scale"])
     writer.add_uint32("qwen3-tts-tokenizer.encoder.codebook_dim", enc["codebook_dim"])
     writer.add_uint32("qwen3-tts-tokenizer.encoder.codebook_size", enc["codebook_size"])
