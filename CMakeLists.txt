@@ -89,12 +89,51 @@ macro(link_ggml_backends target)
     add_dependencies(${target} version)
 endmacro()
 
-# Core library shared between binaries. Holds the shared infrastructure
-# (error/log routing, future common helpers) that any binary linking the
-# pipeline needs. STATIC because we have actual sources now.
-add_library(qwen-core STATIC src/qt-error.cpp)
+# Core library always STATIC : the bundled CLI tools include
+# pipeline-tts.h / pipeline-codec.h / backend.h directly for the tests
+# paths that need every pipeline_* / backend_* symbol resolved without
+# going through the public ABI. QWENTTS_STATIC is propagated PUBLIC :
+# the lib's own .cpp files see it (so QWEN_API resolves to empty when
+# compiling qwen.cpp on Windows), and every consumer that links
+# qwen-core inherits it too (same effect on their side, no spurious
+# dllimport on a static archive). The shared library for ABI consumers
+# is a separate, opt-in target below.
+add_library(qwen-core STATIC
+    src/qwen.cpp
+    src/pipeline-tts.cpp
+    src/pipeline-codec.cpp
+    src/prompt-builder.cpp
+    src/talker-forward.cpp
+    src/code-predictor-forward.cpp
+)
+target_compile_definitions(qwen-core PUBLIC QWENTTS_STATIC)
 target_include_directories(qwen-core PUBLIC src)
 target_link_libraries(qwen-core PUBLIC ggml)
+link_ggml_backends(qwen-core)
+
+# Public shared library for ABI consumers (Python ctypes, Rust bindgen,
+# Go cgo). Opt-in : -DQWENTTS_SHARED=ON at configure time. Exports only
+# the QWEN_API-marked symbols ; every internal pipeline_* / backend_*
+# stays hidden inside the .so. Intentionally a different target name
+# from qwen-core so the static path used by the tools is never affected.
+option(QWENTTS_SHARED "Build the shared qwen library for ABI consumers" OFF)
+if(QWENTTS_SHARED)
+    add_library(qwen SHARED
+        src/qwen.cpp
+        src/pipeline-tts.cpp
+        src/pipeline-codec.cpp
+        src/prompt-builder.cpp
+        src/talker-forward.cpp
+        src/code-predictor-forward.cpp
+    )
+    target_compile_definitions(qwen PRIVATE QWENTTS_BUILD)
+    set_target_properties(qwen PROPERTIES
+        C_VISIBILITY_PRESET       hidden
+        CXX_VISIBILITY_PRESET     hidden
+        VISIBILITY_INLINES_HIDDEN ON
+    )
+    link_ggml_backends(qwen)
+endif()
 
 # quantize: GGUF requantizer (BF16 -> K-quants), shared policy with
 # omnivoice.cpp / acestep.cpp.
@@ -102,11 +141,11 @@ add_executable(quantize tools/quantize.cpp)
 link_ggml_backends(quantize)
 
 # qwen-codec : standalone codec CLI (codes <-> WAV via 12Hz tokenizer)
-add_executable(qwen-codec tools/qwen-codec.cpp src/pipeline-codec.cpp)
+add_executable(qwen-codec tools/qwen-codec.cpp)
 target_link_libraries(qwen-codec PRIVATE qwen-core)
 link_ggml_backends(qwen-codec)
 
 # qwen-tts : full TTS pipeline (Talker LM + 12Hz tokenizer decoder).
-add_executable(qwen-tts tools/qwen-tts.cpp src/pipeline-tts.cpp src/pipeline-codec.cpp src/prompt-builder.cpp src/talker-forward.cpp src/code-predictor-forward.cpp)
+add_executable(qwen-tts tools/qwen-tts.cpp)
 target_link_libraries(qwen-tts PRIVATE qwen-core)
 link_ggml_backends(qwen-tts)
