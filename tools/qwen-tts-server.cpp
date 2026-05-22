@@ -283,12 +283,13 @@ static void handle_speech(
     if (!voice.empty()) {
         if (model.model_type == "voice_design") {
             params.instruct = voice.c_str();
-        } else {
+        } else if (model.model_type == "custom_voice") {
             params.speaker = voice.c_str();
         }
-    } else if (!config.default_speaker.empty()) {
+        // base mode: voice param ignored (use ref_audio instead)
+    } else if (model.model_type == "custom_voice" && !config.default_speaker.empty()) {
         params.speaker = config.default_speaker.c_str();
-    } else if (!config.default_instruct.empty()) {
+    } else if (model.model_type == "voice_design" && !config.default_instruct.empty()) {
         params.instruct = config.default_instruct.c_str();
     }
 
