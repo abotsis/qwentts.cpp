@@ -75,7 +75,11 @@ struct ServerConfig {
     bool        use_fa       = true;
     bool        clamp_fp16   = false;
     std::vector<std::string> api_keys;
-    int         thread_pool_size = 0;  // 0 = auto
+    // Voice cloning defaults (can be overridden per-request in JSON body)
+    std::string default_speaker;       // named speaker for custom_voice
+    std::string default_instruct;      // style instruction for voice_design
+    std::string default_ref_audio;     // reference audio file for base mode cloning
+    std::string default_ref_transcript;// transcript of reference audio
 };
 
 // Load model, start HTTP server, block until SIGINT/SIGTERM.

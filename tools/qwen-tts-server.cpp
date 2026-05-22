@@ -177,13 +177,48 @@ static json make_error(const std::string & message, const std::string & type = "
     };
 }
 
+// Load a reference audio file into mono float PCM at 24kHz.
+// Supports WAV and FLAC via miniaudio.
+static std::vector<float> load_ref_audio(const std::string & path, std::string & err_msg) {
+    std::vector<float> samples;
+    ma_decoder decoder;
+    ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 1, 24000);
+
+    ma_result result = ma_decoder_init_file(path.c_str(), &config, &decoder);
+    if (result != MA_SUCCESS) {
+        err_msg = "Failed to load reference audio: " + path;
+        return samples;
+    }
+
+    ma_uint64 total_frames = 0;
+    ma_decoder_get_length_in_pcm_frames(&decoder, &total_frames);
+    if (total_frames == 0) {
+        ma_decoder_uninit(&decoder);
+        err_msg = "Reference audio is empty: " + path;
+        return samples;
+    }
+
+    samples.resize(total_frames);
+    ma_uint64 frames_read = 0;
+    result = ma_decoder_read_pcm_frames(&decoder, samples.data(), total_frames, &frames_read);
+    ma_decoder_uninit(&decoder);
+
+    if (result != MA_SUCCESS || frames_read == 0) {
+        samples.clear();
+        err_msg = "Failed to read reference audio: " + path;
+        return samples;
+    }
+
+    return samples;
+}
+
 static void handle_speech(
     const TTSModel & model,
+    const ServerConfig & config,
+    const std::vector<float> & ref_audio,
     const httplib::Request & req,
     httplib::Response & res)
 {
-    (void)req;
-
     // Parse JSON body
     json body;
     try {
@@ -201,8 +236,8 @@ static void handle_speech(
         return;
     }
 
-    // Optional params
-    std::string voice       = body.value("voice", std::string(""));
+    // Optional params — CLI defaults overridden by request body
+    std::string voice       = body.value("voice", config.default_speaker.empty() ? config.default_instruct : std::string(""));
     std::string format      = body.value("response_format", std::string("wav"));
     float       speed       = body.value("speed", 1.0f);
 
@@ -251,6 +286,17 @@ static void handle_speech(
         } else {
             params.speaker = voice.c_str();
         }
+    } else if (!config.default_speaker.empty()) {
+        params.speaker = config.default_speaker.c_str();
+    } else if (!config.default_instruct.empty()) {
+        params.instruct = config.default_instruct.c_str();
+    }
+
+    // Voice cloning: reference audio (base mode)
+    if (!ref_audio.empty()) {
+        params.ref_audio_24k = ref_audio.data();
+        params.ref_n_samples = (int)ref_audio.size();
+        params.ref_text = config.default_ref_transcript.empty() ? nullptr : config.default_ref_transcript.c_str();
     }
 
     // Synthesize
@@ -360,6 +406,19 @@ int run_server(ServerConfig config)
 
     fprintf(stderr, "Model loaded: %s %s\n", model.model_size.c_str(), model.model_type.c_str());
 
+    // Load reference audio (voice cloning)
+    std::vector<float> ref_audio;
+    if (!config.default_ref_audio.empty()) {
+        std::string err_msg;
+        ref_audio = load_ref_audio(config.default_ref_audio, err_msg);
+        if (ref_audio.empty()) {
+            fprintf(stderr, "Error: %s\n", err_msg.c_str());
+            qt_free(ctx);
+            return -1;
+        }
+        fprintf(stderr, "Loaded reference audio: %zu samples @ 24kHz\n", ref_audio.size());
+    }
+
     // Start HTTP server
     httplib::Server svr;
 
@@ -398,7 +457,7 @@ int run_server(ServerConfig config)
     });
 
     // Routes
-    svr.Post ("/v1/audio/speech",       [&model](const auto & req, auto & res) { handle_speech(model, req, res); });
+    svr.Post ("/v1/audio/speech",       [&model, &config, &ref_audio](const auto & req, auto & res) { handle_speech(model, config, ref_audio, req, res); });
     svr.Get  ("/v1/models",             [&model](const auto & req, auto & res) { handle_models(model, req, res); });
     svr.Get  ("/models",                [&model](const auto & req, auto & res) { handle_models(model, req, res); });
     svr.Get  ("/health",                [](const auto & req, auto & res) { handle_health(req, res); });
@@ -448,6 +507,11 @@ static void print_usage(const char * prog) {
             "  --host <addr>           Bind address (default: 0.0.0.0)\n"
             "  --port <n>              Bind port (default: 8080)\n"
             "  --api-key <key>         Require API key (can repeat)\n\n"
+            "Voice (defaults, overridden per-request):\n"
+            "  --speaker <name>        Default speaker name (custom_voice)\n"
+            "  --instruct <text>       Default voice instruction (voice_design)\n"
+            "  --ref-audio <file>      Reference audio for voice cloning (base mode)\n"
+            "  --ref-transcript <text> Transcript of reference audio\n\n"
             "Inference:\n"
             "  --no-fa                 Disable flash attention\n"
             "  --clamp-fp16            Clamp hidden states to FP16 range\n",
@@ -470,6 +534,14 @@ int main(int argc, char ** argv)
             config.port = std::atoi(argv[++i]);
         } else if (strcmp(argv[i], "--api-key") == 0 && i + 1 < argc) {
             config.api_keys.push_back(argv[++i]);
+        } else if (strcmp(argv[i], "--speaker") == 0 && i + 1 < argc) {
+            config.default_speaker = argv[++i];
+        } else if (strcmp(argv[i], "--instruct") == 0 && i + 1 < argc) {
+            config.default_instruct = argv[++i];
+        } else if (strcmp(argv[i], "--ref-audio") == 0 && i + 1 < argc) {
+            config.default_ref_audio = argv[++i];
+        } else if (strcmp(argv[i], "--ref-transcript") == 0 && i + 1 < argc) {
+            config.default_ref_transcript = argv[++i];
         } else if (strcmp(argv[i], "--no-fa") == 0) {
             config.use_fa = false;
         } else if (strcmp(argv[i], "--clamp-fp16") == 0) {
