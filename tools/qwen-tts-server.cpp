@@ -322,6 +322,27 @@ static void handle_speech(
         if (model.model_type == "voice_design") {
             params.instruct = voice.c_str();
         } else if (model.model_type == "custom_voice") {
+            // Validate speaker name against loaded speaker table
+            void * names_void = NULL;
+            int n = qt_get_speakers(model.ctx, &names_void);
+            const char ** names = (const char **) names_void;
+            bool found = false;
+            for (int i = 0; i < n; i++) {
+                if (voice == names[i]) { found = true; break; }
+            }
+            if (!found) {
+                // Build list of valid names for the error message
+                std::string valid_list;
+                for (int i = 0; i < n; i++) {
+                    if (i > 0) valid_list += ", ";
+                    valid_list += names[i];
+                }
+                res.status = 400;
+                res.set_content(make_error(
+                    "Unknown voice: '" + voice + "'. Available voices: " + valid_list,
+                    "invalid_request_error").dump(), "application/json");
+                return;
+            }
             params.speaker = voice.c_str();
         }
         // base mode: voice param ignored (use ref_audio instead)
@@ -434,6 +455,50 @@ static void handle_health(
     res.set_content(R"({"status":"ok","model_loaded":true})", "application/json");
 }
 
+static void handle_voices(
+    const TTSModel & model,
+    const httplib::Request & req,
+    httplib::Response & res)
+{
+    (void)req;
+
+    json voices = json::array();
+
+    if (model.model_type == "custom_voice") {
+        void * names_void = NULL;
+        int n = qt_get_speakers(model.ctx, &names_void);
+        const char ** names = (const char **) names_void;
+        for (int i = 0; i < n; i++) {
+            voices.push_back(json{
+                {"id", names[i]},
+                {"name", names[i]},
+                {"type", "built_in"}
+            });
+        }
+    } else if (model.model_type == "voice_design") {
+        voices.push_back(json{
+            {"id", "custom"},
+            {"name", "custom"},
+            {"type", "text_description"},
+            {"description", "Pass any voice description in the 'voice' field"}
+        });
+    } else if (model.model_type == "base") {
+        voices.push_back(json{
+            {"id", "cloned"},
+            {"name", "cloned"},
+            {"type", "reference_audio"},
+            {"description", "Voice cloned from --ref-audio at startup"}
+        });
+    }
+
+    json result = json{
+        {"object", "list"},
+        {"data", voices}
+    };
+
+    res.set_content(result.dump(), "application/json");
+}
+
 /* ------------------------------------------------------------------ */
 /*  Server bootstrap                                                   */
 /* ------------------------------------------------------------------ */
@@ -486,7 +551,8 @@ int run_server(ServerConfig config)
         svr.set_pre_routing_handler([&config](const httplib::Request & req, httplib::Response & res) {
             // Public endpoints
             if (req.path == "/health" || req.path == "/v1/health" ||
-                req.path == "/models" || req.path == "/v1/models") {
+                req.path == "/models" || req.path == "/v1/models" ||
+                req.path == "/voices" || req.path == "/v1/voices") {
                 return httplib::Server::HandlerResponse::Unhandled;
             }
 
@@ -516,11 +582,13 @@ int run_server(ServerConfig config)
     });
 
     // Routes
-    svr.Post ("/v1/audio/speech",       [&model, &config, &ref_audio](const auto & req, auto & res) { handle_speech(model, config, ref_audio, req, res); });
-    svr.Get  ("/v1/models",             [&model](const auto & req, auto & res) { handle_models(model, req, res); });
-    svr.Get  ("/models",                [&model](const auto & req, auto & res) { handle_models(model, req, res); });
-    svr.Get  ("/health",                [](const auto & req, auto & res) { handle_health(req, res); });
-    svr.Get  ("/v1/health",             [](const auto & req, auto & res) { handle_health(req, res); });
+    svr.Post ("/v1/audio/speech",        [&model, &config, &ref_audio](const auto & req, auto & res) { handle_speech(model, config, ref_audio, req, res); });
+    svr.Get  ("/v1/models",              [&model](const auto & req, auto & res) { handle_models(model, req, res); });
+    svr.Get  ("/models",                 [&model](const auto & req, auto & res) { handle_models(model, req, res); });
+    svr.Get  ("/v1/voices",              [&model](const auto & req, auto & res) { handle_voices(model, req, res); });
+    svr.Get  ("/voices",                 [&model](const auto & req, auto & res) { handle_voices(model, req, res); });
+    svr.Get  ("/health",                 [](const auto & req, auto & res) { handle_health(req, res); });
+    svr.Get  ("/v1/health",              [](const auto & req, auto & res) { handle_health(req, res); });
 
     // Graceful shutdown via signal
     std::signal(SIGINT,  signal_handler);
